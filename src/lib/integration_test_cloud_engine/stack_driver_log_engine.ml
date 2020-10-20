@@ -954,8 +954,9 @@ let wait_for :
   | res ->
       Deferred.return res
 
-let wait_for_payment ?(num_tries = 30) t ~logger ~sender ~receiver ~amount () :
-    unit Malleable_error.t =
+let wait_for_payment ?(num_tries = 30)
+    ?(status : Coda_base.User_command_status.t option) t ~logger ~sender
+    ~receiver ~amount () : unit Malleable_error.t =
   let retry_delay_sec = 30.0 in
   let rec go n =
     if n <= 0 then
@@ -991,13 +992,15 @@ let wait_for_payment ?(num_tries = 30) t ~logger ~sender ~receiver ~amount () :
            as soon as we find a matching payment, don't
             check any other commands
         *)
-          let found =
-            List.fold res ~init:false ~f:(fun found_outer {user_commands} ->
-                if found_outer then true
+          let payment_opt =
+            List.fold res ~init:None
+              ~f:(fun payment_outer_opt {user_commands} ->
+                if Option.is_some payment_outer_opt then payment_outer_opt
                 else
-                  List.fold user_commands ~init:false
-                    ~f:(fun found_inner cmd_with_status ->
-                      if found_inner then true
+                  List.fold user_commands ~init:None
+                    ~f:(fun payment_inner_opt cmd_with_status ->
+                      if Option.is_some payment_inner_opt then
+                        payment_inner_opt
                       else
                         (* N.B.: we're not checking fee, nonce or memo *)
                         let signed_cmd = cmd_with_status.With_status.data in
@@ -1010,21 +1013,48 @@ let wait_for_payment ?(num_tries = 30) t ~logger ~sender ~receiver ~amount () :
                             { source_pk
                             ; receiver_pk
                             ; amount= paid_amt
-                            ; token_id= _ } ->
-                            Public_key.Compressed.equal source_pk sender
-                            && Public_key.Compressed.equal receiver_pk receiver
-                            && Currency.Amount.equal paid_amt amount
+                            ; token_id= _ }
+                          when Public_key.Compressed.equal source_pk sender
+                               && Public_key.Compressed.equal receiver_pk
+                                    receiver
+                               && Currency.Amount.equal paid_amt amount ->
+                            Some cmd_with_status
                         | _ ->
-                            false ) )
+                            None ) )
           in
-          if found then (
-            [%log info] "wait_for_payment: found matching payment"
-              ~metadata:
-                [ ("sender", `String (Public_key.Compressed.to_string sender))
-                ; ( "receiver"
-                  , `String (Public_key.Compressed.to_string receiver) )
-                ; ("amount", `String (Currency.Amount.to_string amount)) ] ;
-            Malleable_error.return () )
+          if Option.is_some payment_opt then (
+            let cmd_with_status = Option.value_exn payment_opt in
+            let actual_status = cmd_with_status.With_status.status in
+            if
+              Option.is_none status
+              || User_command_status.equal (Option.value_exn status)
+                   actual_status
+            then (
+              [%log info] "wait_for_payment: found matching payment"
+                ~metadata:
+                  [ ("sender", `String (Public_key.Compressed.to_string sender))
+                  ; ( "receiver"
+                    , `String (Public_key.Compressed.to_string receiver) )
+                  ; ("amount", `String (Currency.Amount.to_string amount))
+                  ; ( "user_command_status"
+                    , User_command_status.to_yojson actual_status ) ] ;
+              Malleable_error.return () )
+            else
+              let expected_status = Option.value_exn status in
+              [%log info]
+                "wait_for_payment: found matching payment, but with \
+                 unexpected status"
+                ~metadata:
+                  [ ("sender", `String (Public_key.Compressed.to_string sender))
+                  ; ( "receiver"
+                    , `String (Public_key.Compressed.to_string receiver) )
+                  ; ("amount", `String (Currency.Amount.to_string amount))
+                  ; ( "expected_user_command_status"
+                    , User_command_status.to_yojson expected_status )
+                  ; ( "actual_user_command_status"
+                    , User_command_status.to_yojson actual_status ) ] ;
+              Error.raise
+                (Error.of_string "Unexpected status in matching payment") )
           else (
             [%log info]
               "wait_for_payment: found added breadcrumbs, but did not find \

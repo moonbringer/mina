@@ -150,6 +150,7 @@ module type Engine_intf = sig
     *)
     val wait_for_payment :
          ?num_tries:int
+      -> ?status:Coda_base.User_command_status.t
       -> t
       -> logger:Logger.t
       -> sender:Signature_lib.Public_key.Compressed.t

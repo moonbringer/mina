@@ -79,5 +79,5 @@ module Make (Engine : Engine_intf) = struct
         block_producer
     in
     [%test_eq: Currency.Balance.t] balance expected_balance ;
-    [%log info] "Block producer test with locked accounts completed"
+    [%log info] "Block producer test with timed accounts completed"
 end
