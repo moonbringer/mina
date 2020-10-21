@@ -17,14 +17,26 @@ module Make (Engine : Engine_intf) = struct
     let open Currency in
     let balance = Balance.of_int 100_000_000_000 in
     (*Should fully vest by slot = 7 provided blocks are produced from slot 1*)
-    let timing : Coda_base.Account_timing.t =
+    let make_timing ~cliff_time ~vesting_period ~vesting_increment :
+        Coda_base.Account_timing.t =
       Timed
         { initial_minimum_balance= balance
-        ; cliff_time= Coda_numbers.Global_slot.of_int 4
-        ; vesting_period= Coda_numbers.Global_slot.of_int 2
-        ; vesting_increment= Amount.of_int 50_000_000_000 }
+        ; cliff_time= Coda_numbers.Global_slot.of_int cliff_time
+        ; vesting_period= Coda_numbers.Global_slot.of_int vesting_period
+        ; vesting_increment= Amount.of_int vesting_increment }
     in
-    {default with block_producers= [{balance= block_producer_balance; timing}]}
+    let timing1 =
+      make_timing ~cliff_time:4 ~vesting_period:2
+        ~vesting_increment:50_000_000_000
+    in
+    let timing2 =
+      make_timing ~cliff_time:0 ~vesting_period:200
+        ~vesting_increment:10_000_000_000
+    in
+    { default with
+      block_producers=
+        [ {balance= block_producer_balance; timing= timing1}
+        ; {balance= block_producer_balance; timing= timing2} ] }
 
   let expected_balance blocks ~slots init_balance ~slots_with_locked_tokens
       ~(constraint_constants : Genesis_constants.Constraint_constants.t) =
@@ -53,15 +65,35 @@ module Make (Engine : Engine_intf) = struct
   let run network log_engine =
     let open Network in
     let open Malleable_error.Let_syntax in
-    let block_producer = List.nth_exn network.Network.block_producers 0 in
-    let%bind () = Log_engine.wait_for_init block_producer log_engine in
+    let logger = Logger.create () in
+    let block_producer1 = List.nth_exn network.Network.block_producers 0 in
+    let block_producer2 = List.nth_exn network.Network.block_producers 1 in
+    let%bind () = Log_engine.wait_for_init block_producer1 log_engine in
+    [%log info] "Block producer 1 (of 2) initialized" ;
+    let%bind () = Log_engine.wait_for_init block_producer2 log_engine in
+    [%log info] "Block producer 2 (of 2) initialized" ;
+    (*    let pk_of_keypair n =
+      let open Signature_lib in
+
+      let open Keypair in
+      let {public_key;_} = List.nth_exn network.keypairs n in
+      public_key |> Public_key.compress
+    in
+    let sender = pk_of_keypair 1 in
+    let receiver = pk_of_keypair 0 in
+    let amount = Currency.Amount.of_int 200_000_000 in
+    let fee = Currency.Fee.of_int 10_000_000 in
+    let%bind () = Node.send_payment ~logger block_producer2 ~sender ~receiver ~amount ~fee in
+    (* confirm payment *)
+    let%bind () = Log_engine.wait_for_payment log_engine ~logger ~sender ~receiver ~amount ()
+      in *)
     let%bind ( `Blocks_produced blocks_produced
              , `Slots_passed slots
              , `Snarked_ledgers_generated _snarked_ledger_generated ) =
       Log_engine.wait_for ~blocks:8 ~snarked_ledgers_generated:1
         ~timeout:(`Slots 30) log_engine
     in
-    let logger = Logger.create () in
+    (* see if we can produced a new SNARKed ledger *)
     [%log info] "blocks produced %d slots passed %d" blocks_produced slots ;
     let expected_balance =
       expected_balance blocks_produced ~slots
@@ -76,7 +108,7 @@ module Make (Engine : Engine_intf) = struct
     let%map balance =
       Node.get_balance ~logger
         ~account_id:Coda_base.(Account_id.create pk Token_id.default)
-        block_producer
+        block_producer1
     in
     [%test_eq: Currency.Balance.t] balance expected_balance ;
     [%log info] "Block producer test with timed accounts completed"
