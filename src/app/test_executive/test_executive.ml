@@ -22,7 +22,7 @@ let tests : test list =
     , (module Block_production_test.Make : Test_functor_intf) )
   ; ("bootstrap", (module Bootstrap_test.Make : Test_functor_intf))
   ; ("send-payment", (module Send_payment_test.Make : Test_functor_intf))
-  ; ( "bp-timed-accounts"
+  ; ( "timed-accts"
     , (module Block_production_test_timed_accounts.Make : Test_functor_intf) )
   ]
 

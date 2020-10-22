@@ -68,25 +68,32 @@ module Make (Engine : Engine_intf) = struct
     let logger = Logger.create () in
     let block_producer1 = List.nth_exn network.Network.block_producers 0 in
     let block_producer2 = List.nth_exn network.Network.block_producers 1 in
+    [%log info] "Waiting for block producer 1 (of 2) to initialize" ;
     let%bind () = Log_engine.wait_for_init block_producer1 log_engine in
     [%log info] "Block producer 1 (of 2) initialized" ;
+    [%log info] "Waiting for block producer 2 (of 2) to initialize" ;
     let%bind () = Log_engine.wait_for_init block_producer2 log_engine in
     [%log info] "Block producer 2 (of 2) initialized" ;
-    (*    let pk_of_keypair n =
+    let pk_of_keypair n =
       let open Signature_lib in
-
       let open Keypair in
-      let {public_key;_} = List.nth_exn network.keypairs n in
+      let {public_key; _} = List.nth_exn network.keypairs n in
       public_key |> Public_key.compress
     in
     let sender = pk_of_keypair 1 in
     let receiver = pk_of_keypair 0 in
     let amount = Currency.Amount.of_int 200_000_000 in
     let fee = Currency.Fee.of_int 10_000_000 in
-    let%bind () = Node.send_payment ~logger block_producer2 ~sender ~receiver ~amount ~fee in
+    [%log info] "Sending payment" ;
+    let%bind () =
+      Node.send_payment ~logger block_producer2 ~sender ~receiver ~amount ~fee
+    in
     (* confirm payment *)
-    let%bind () = Log_engine.wait_for_payment log_engine ~logger ~sender ~receiver ~amount ()
-      in *)
+    let%bind () =
+      Log_engine.wait_for_payment log_engine ~logger ~sender ~receiver ~amount
+        ()
+    in
+    [%log info] "Payment received" ;
     let%bind ( `Blocks_produced blocks_produced
              , `Slots_passed slots
              , `Snarked_ledgers_generated _snarked_ledger_generated ) =

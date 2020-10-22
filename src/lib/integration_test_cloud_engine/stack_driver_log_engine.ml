@@ -234,26 +234,31 @@ module Json_parsing = struct
       Malleable_error.of_string_hard_error
         (Printf.sprintf "failed to parse json value: %s" (Exn.to_string exn))
 
-  let signed_commands_with_statuses :
-      Coda_base.Signed_command.t Coda_base.With_status.t list parser = function
+  let valid_commands_with_statuses :
+      Coda_base.User_command.Valid.t Coda_base.With_status.t list parser =
+    function
     | `List cmds ->
         let cmd_or_errors =
           List.map cmds
             ~f:
               (Coda_base.With_status.of_yojson
-                 Coda_base.Signed_command.of_yojson)
+                 Coda_base.User_command.Valid.of_yojson)
         in
         List.fold cmd_or_errors ~init:[] ~f:(fun accum cmd_or_err ->
             match (accum, cmd_or_err) with
-            | _, Error _ ->
+            | _, Error err ->
+                let logger = Logger.create () in
+                [%log error]
+                  ~metadata:[("error", `String err)]
+                  "Failed to parse JSON for user command status" ;
                 (* fail on any error *)
                 failwith
-                  "signed_commands_with_statuses: unable to parse JSON for \
+                  "valid_commands_with_statuses: unable to parse JSON for \
                    user command"
             | cmds, Ok cmd ->
                 cmd :: cmds )
     | _ ->
-        failwith "signed_commands_with_statuses: expected `List"
+        failwith "valid_commands_with_statuses: expected `List"
 
   let rec find (parser : 'a parser) (json : Yojson.Safe.t) (path : string list)
       : 'a Malleable_error.t =
@@ -501,7 +506,7 @@ module Breadcrumb_added_query = struct
   open Coda_base
 
   module Result = struct
-    type t = {user_commands: Signed_command.t With_status.t list}
+    type t = {user_commands: User_command.Valid.t With_status.t list}
   end
 
   let filter testnet_log_filter =
@@ -517,7 +522,7 @@ module Breadcrumb_added_query = struct
     let open Malleable_error.Let_syntax in
     (* JSON path to metadata entry *)
     let path = ["jsonPayload"; "metadata"; "user_commands"] in
-    let parser = signed_commands_with_statuses in
+    let parser = valid_commands_with_statuses in
     let%map user_commands = find parser js path in
     Result.{user_commands}
 end
@@ -998,28 +1003,35 @@ let wait_for_payment ?(num_tries = 30)
                 if Option.is_some payment_outer_opt then payment_outer_opt
                 else
                   List.fold user_commands ~init:None
-                    ~f:(fun payment_inner_opt cmd_with_status ->
+                    ~f:(fun payment_inner_opt
+                       (cmd_with_status : User_command.Valid.t With_status.t)
+                       ->
                       if Option.is_some payment_inner_opt then
                         payment_inner_opt
                       else
                         (* N.B.: we're not checking fee, nonce or memo *)
-                        let signed_cmd = cmd_with_status.With_status.data in
-                        let body =
-                          Signed_command.payload signed_cmd
-                          |> Signed_command_payload.body
-                        in
-                        match body with
-                        | Payment
-                            { source_pk
-                            ; receiver_pk
-                            ; amount= paid_amt
-                            ; token_id= _ }
-                          when Public_key.Compressed.equal source_pk sender
-                               && Public_key.Compressed.equal receiver_pk
-                                    receiver
-                               && Currency.Amount.equal paid_amt amount ->
-                            Some cmd_with_status
-                        | _ ->
+                        let valid_cmd = cmd_with_status.With_status.data in
+                        match valid_cmd with
+                        | Signed_command signed_cmd -> (
+                            let body =
+                              Signed_command.payload
+                                (Signed_command.forget_check signed_cmd)
+                              |> Signed_command_payload.body
+                            in
+                            match body with
+                            | Payment
+                                { source_pk
+                                ; receiver_pk
+                                ; amount= paid_amt
+                                ; token_id= _ }
+                              when Public_key.Compressed.equal source_pk sender
+                                   && Public_key.Compressed.equal receiver_pk
+                                        receiver
+                                   && Currency.Amount.equal paid_amt amount ->
+                                Some cmd_with_status
+                            | _ ->
+                                None )
+                        | Snapp_command _ ->
                             None ) )
           in
           if Option.is_some payment_opt then (
