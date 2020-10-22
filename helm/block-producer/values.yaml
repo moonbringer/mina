@@ -1,6 +1,5 @@
 testnetName: "coda-testnet"
 coda:
-  runtimeConfig: ""
   logLevel: "Trace"
   logReceivedBlocks: false
   logSnarkWorkGossip: false
