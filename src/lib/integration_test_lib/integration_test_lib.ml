@@ -150,7 +150,19 @@ module type Engine_intf = sig
     *)
     val wait_for_payment :
          ?num_tries:int
-      -> ?status:Coda_base.User_command_status.t
+      -> t
+      -> logger:Logger.t
+      -> sender:Signature_lib.Public_key.Compressed.t
+      -> receiver:Signature_lib.Public_key.Compressed.t
+      -> amount:Currency.Amount.t
+      -> unit
+      -> unit Malleable_error.t
+
+    (** wait until a payment is rejected from the transaction pool
+        num_tries is the maximum number of breadcrumbs to examine
+    *)
+    val wait_for_rejected_payment :
+         ?num_tries:int
       -> t
       -> logger:Logger.t
       -> sender:Signature_lib.Public_key.Compressed.t

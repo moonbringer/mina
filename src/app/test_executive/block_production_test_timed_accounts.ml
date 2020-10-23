@@ -9,29 +9,28 @@ module Make (Engine : Engine_intf) = struct
 
   type log_engine = Log_engine.t
 
-  let block_producer_balance = "1000"
+  let block_producer_balance = "1000" (* 1_000_000_000_000 *)
 
   let config =
     let open Test_config in
     let open Test_config.Block_producer in
     let open Currency in
-    let balance = Balance.of_int 100_000_000_000 in
     (*Should fully vest by slot = 7 provided blocks are produced from slot 1*)
-    let make_timing ~cliff_time ~vesting_period ~vesting_increment :
-        Coda_base.Account_timing.t =
+    let make_timing ~min_balance ~cliff_time ~vesting_period ~vesting_increment
+        : Coda_base.Account_timing.t =
       Timed
-        { initial_minimum_balance= balance
+        { initial_minimum_balance= Balance.of_int min_balance
         ; cliff_time= Coda_numbers.Global_slot.of_int cliff_time
         ; vesting_period= Coda_numbers.Global_slot.of_int vesting_period
         ; vesting_increment= Amount.of_int vesting_increment }
     in
     let timing1 =
-      make_timing ~cliff_time:4 ~vesting_period:2
+      make_timing ~min_balance:100_000_000_000 ~cliff_time:4 ~vesting_period:2
         ~vesting_increment:50_000_000_000
     in
     let timing2 =
-      make_timing ~cliff_time:0 ~vesting_period:200
-        ~vesting_increment:10_000_000_000
+      make_timing ~min_balance:1_000_000_000_000 ~cliff_time:0
+        ~vesting_period:20000 ~vesting_increment:10_000_000_000
     in
     { default with
       block_producers=
@@ -82,18 +81,20 @@ module Make (Engine : Engine_intf) = struct
     in
     let sender = pk_of_keypair 1 in
     let receiver = pk_of_keypair 0 in
-    let amount = Currency.Amount.of_int 200_000_000 in
+    let amount = Currency.Amount.of_int 1_000_000_000_999 in
     let fee = Currency.Fee.of_int 10_000_000 in
     [%log info] "Sending payment" ;
     let%bind () =
       Node.send_payment ~logger block_producer2 ~sender ~receiver ~amount ~fee
     in
-    (* confirm payment *)
-    let%bind () =
-      Log_engine.wait_for_payment log_engine ~logger ~sender ~receiver ~amount
-        ()
+    (* confirm rejected payment *)
+    let%map () =
+      Log_engine.wait_for_rejected_payment log_engine ~logger ~sender ~receiver
+        ~amount ()
     in
-    [%log info] "Payment received" ;
+    [%log info] "Payment rejected"
+
+  (* ;
     let%bind ( `Blocks_produced blocks_produced
              , `Slots_passed slots
              , `Snarked_ledgers_generated _snarked_ledger_generated ) =
@@ -118,5 +119,5 @@ module Make (Engine : Engine_intf) = struct
         block_producer1
     in
     [%test_eq: Currency.Balance.t] balance expected_balance ;
-    [%log info] "Block producer test with timed accounts completed"
+      [%log info] "Block producer test with timed accounts completed" *)
 end

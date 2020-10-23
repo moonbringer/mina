@@ -80,7 +80,7 @@ module Node = struct
       in
       [%log info] "Port forwarding using \"kubectl %s\"\n"
         String.(concat args ~sep:" ") ;
-      let%bind.Malleable_error.Let_syntax proc =
+      let%bind proc =
         Deferred.bind ~f:Malleable_error.of_or_error_hard
           (Process.create ~prog:"kubectl" ~args ())
       in

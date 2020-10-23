@@ -234,6 +234,16 @@ module Json_parsing = struct
       Malleable_error.of_string_hard_error
         (Printf.sprintf "failed to parse json value: %s" (Exn.to_string exn))
 
+  let parser_from_of_yojson of_yojson js =
+    match of_yojson js with
+    | Ok cmd ->
+        cmd
+    | Error modl ->
+        let logger = Logger.create () in
+        [%log error] "Could not parse JSON using of_yojson"
+          ~metadata:[("module", `String modl); ("json", js)] ;
+        failwithf "Could not parse JSON using %s.of_yojson" modl ()
+
   let valid_commands_with_statuses :
       Coda_base.User_command.Valid.t Coda_base.With_status.t list parser =
     function
@@ -527,6 +537,33 @@ module Breadcrumb_added_query = struct
     Result.{user_commands}
 end
 
+module Rejected_command_query = struct
+  open Coda_base
+  module Transaction_pool = Network_pool.Transaction_pool
+  module Diff_error = Transaction_pool.Diff_versioned.Diff_error
+
+  module Result = struct
+    type t = {command: User_command.t; reason: Diff_error.t}
+  end
+
+  let filter testnet_log_filter =
+    String.concat ~sep:"\n"
+      [ testnet_log_filter
+      ; coda_container_filter
+      ; structured_event_filter
+          Transaction_pool.rejecting_command_for_reason_structured_events_id ]
+
+  let parse js : Result.t Malleable_error.t =
+    let open Json_parsing in
+    let open Malleable_error.Let_syntax in
+    let path = ["jsonPayload"; "metadata"] in
+    let cmd_parser = parser_from_of_yojson User_command.of_yojson in
+    let reason_parser = parser_from_of_yojson Diff_error.of_yojson in
+    let%bind command = find cmd_parser js (path @ ["cmd"]) in
+    let%map reason = find reason_parser js (path @ ["reason"]) in
+    Result.{command; reason}
+end
+
 type errors =
   { warn: Error_query.Result.t DynArray.t
   ; error: Error_query.Result.t DynArray.t
@@ -544,7 +581,8 @@ type subscriptions =
   ; initialization: Subscription.t
   ; blocks_produced: Subscription.t
   ; transition_frontier_diff_application: Subscription.t
-  ; breadcrumb_added: Subscription.t }
+  ; breadcrumb_added: Subscription.t
+  ; rejected_command: Subscription.t }
 
 type constants =
   { constraints: Genesis_constants.Constraint_constants.t
@@ -566,13 +604,15 @@ let delete_subscriptions
     ; initialization
     ; blocks_produced
     ; transition_frontier_diff_application
-    ; breadcrumb_added } =
+    ; breadcrumb_added
+    ; rejected_command } =
   Malleable_error.combine_errors
     [ Subscription.delete errors
     ; Subscription.delete initialization
     ; Subscription.delete blocks_produced
     ; Subscription.delete transition_frontier_diff_application
-    ; Subscription.delete breadcrumb_added ]
+    ; Subscription.delete breadcrumb_added
+    ; Subscription.delete rejected_command ]
 
 let rec pull_subscription_in_background ~logger ~subscription_name
     ~parse_subscription ~subscription ~handle_result =
@@ -635,6 +675,11 @@ let create ~logger ~(network : Kubernetes_network.t) ~on_fatal_error =
       ~filter:(Breadcrumb_added_query.filter network.testnet_log_filter)
   in
   [%log info] "Subscription created for breadcrumbs added" ;
+  let%bind rejected_command =
+    Subscription.create ~logger ~name:"rejected_command"
+      ~filter:(Rejected_command_query.filter network.testnet_log_filter)
+  in
+  [%log info] "Subscription created for rejected command" ;
   let cancel_background_tasks_ivar = Ivar.create () in
   let error_accumulator = empty_errors () in
   let%bind errors, errors_task_finished =
@@ -745,7 +790,8 @@ let create ~logger ~(network : Kubernetes_network.t) ~on_fatal_error =
       ; initialization
       ; blocks_produced
       ; transition_frontier_diff_application
-      ; breadcrumb_added }
+      ; breadcrumb_added
+      ; rejected_command }
   ; cancel_background_tasks
   ; error_accumulator
   ; initialization_table
@@ -959,9 +1005,27 @@ let wait_for :
   | res ->
       Deferred.return res
 
-let wait_for_payment ?(num_tries = 30)
-    ?(status : Coda_base.User_command_status.t option) t ~logger ~sender
-    ~receiver ~amount () : unit Malleable_error.t =
+let command_matches_payment cmd ~sender ~receiver ~amount =
+  let open User_command in
+  match cmd with
+  | Signed_command signed_cmd -> (
+      let open Signature_lib in
+      let body =
+        Signed_command.payload signed_cmd |> Signed_command_payload.body
+      in
+      match body with
+      | Payment {source_pk; receiver_pk; amount= paid_amt; token_id= _}
+        when Public_key.Compressed.equal source_pk sender
+             && Public_key.Compressed.equal receiver_pk receiver
+             && Currency.Amount.equal paid_amt amount ->
+          true
+      | _ ->
+          false )
+  | Snapp_command _ ->
+      false
+
+let wait_for_payment ?(num_tries = 30) t ~logger ~sender ~receiver ~amount () :
+    unit Malleable_error.t =
   let retry_delay_sec = 30.0 in
   let rec go n =
     if n <= 0 then
@@ -992,87 +1056,115 @@ let wait_for_payment ?(num_tries = 30)
           let open Coda_base in
           let open Signature_lib in
           (* res is a list of Breadcrumb_added_query.Result.t
-           each of those contains a list of user commands
-           fold over the fold of each list
-           as soon as we find a matching payment, don't
-            check any other commands
-        *)
+             each of those contains a list of user commands
+          *)
           let payment_opt =
-            List.fold res ~init:None
-              ~f:(fun payment_outer_opt {user_commands} ->
-                if Option.is_some payment_outer_opt then payment_outer_opt
+            List.fold res ~init:None ~f:(fun acc {user_commands} ->
+                if Option.is_some acc then acc
                 else
-                  List.fold user_commands ~init:None
-                    ~f:(fun payment_inner_opt
-                       (cmd_with_status : User_command.Valid.t With_status.t)
+                  List.find user_commands
+                    ~f:(fun (cmd_with_status :
+                              User_command.Valid.t With_status.t)
                        ->
-                      if Option.is_some payment_inner_opt then
-                        payment_inner_opt
-                      else
-                        (* N.B.: we're not checking fee, nonce or memo *)
-                        let valid_cmd = cmd_with_status.With_status.data in
-                        match valid_cmd with
-                        | Signed_command signed_cmd -> (
-                            let body =
-                              Signed_command.payload
-                                (Signed_command.forget_check signed_cmd)
-                              |> Signed_command_payload.body
-                            in
-                            match body with
-                            | Payment
-                                { source_pk
-                                ; receiver_pk
-                                ; amount= paid_amt
-                                ; token_id= _ }
-                              when Public_key.Compressed.equal source_pk sender
-                                   && Public_key.Compressed.equal receiver_pk
-                                        receiver
-                                   && Currency.Amount.equal paid_amt amount ->
-                                Some cmd_with_status
-                            | _ ->
-                                None )
-                        | Snapp_command _ ->
-                            None ) )
+                      cmd_with_status.With_status.data
+                      |> User_command.forget_check
+                      |> command_matches_payment ~sender ~receiver ~amount ) )
           in
-          if Option.is_some payment_opt then (
+          if Option.is_some payment_opt then
             let cmd_with_status = Option.value_exn payment_opt in
             let actual_status = cmd_with_status.With_status.status in
-            if
-              Option.is_none status
-              || User_command_status.equal (Option.value_exn status)
-                   actual_status
-            then (
+            let applied =
+              match actual_status with
+              | User_command_status.Applied _ ->
+                  true
+              | _ ->
+                  false
+            in
+            if applied then (
               [%log info] "wait_for_payment: found matching payment"
                 ~metadata:
                   [ ("sender", `String (Public_key.Compressed.to_string sender))
                   ; ( "receiver"
                     , `String (Public_key.Compressed.to_string receiver) )
-                  ; ("amount", `String (Currency.Amount.to_string amount))
-                  ; ( "user_command_status"
-                    , User_command_status.to_yojson actual_status ) ] ;
+                  ; ("amount", `String (Currency.Amount.to_string amount)) ] ;
               Malleable_error.return () )
-            else
-              let expected_status = Option.value_exn status in
+            else (
               [%log info]
-                "wait_for_payment: found matching payment, but with \
-                 unexpected status"
+                "wait_for_payment: found matching payment, but status is not \
+                 'Applied'"
                 ~metadata:
                   [ ("sender", `String (Public_key.Compressed.to_string sender))
                   ; ( "receiver"
                     , `String (Public_key.Compressed.to_string receiver) )
                   ; ("amount", `String (Currency.Amount.to_string amount))
-                  ; ( "expected_user_command_status"
-                    , User_command_status.to_yojson expected_status )
                   ; ( "actual_user_command_status"
                     , User_command_status.to_yojson actual_status ) ] ;
               Error.raise
-                (Error.of_string "Unexpected status in matching payment") )
+                (Error.of_string
+                   (sprintf "Unexpected status in matching payment: %s"
+                      ( User_command_status.to_yojson actual_status
+                      |> Yojson.Safe.to_string ))) )
           else (
             [%log info]
               "wait_for_payment: found added breadcrumbs, but did not find \
                matching payment" ;
             let%bind () = after Time.Span.(of_sec retry_delay_sec) in
             go (n - 1) )
+  in
+  go num_tries
+
+let wait_for_rejected_payment ?(num_tries = 30) t ~logger ~sender ~receiver
+    ~amount () : unit Malleable_error.t =
+  let retry_delay_sec = 30.0 in
+  let rec go n =
+    if n <= 0 then
+      Malleable_error.of_string_hard_error
+        (sprintf
+           "wait_for_rejected_payment: did not find matching rejected payment \
+            after %d trie(s)"
+           num_tries)
+    else
+      let%bind results =
+        let open Malleable_error.Let_syntax in
+        let%bind rejected_cmd_json =
+          Subscription.pull t.subscriptions.rejected_command
+        in
+        Malleable_error.List.map rejected_cmd_json
+          ~f:Rejected_command_query.parse
+      in
+      match results with
+      | Error
+          { Malleable_error.Hard_fail.hard_error= err
+          ; Malleable_error.Hard_fail.soft_errors= _ } ->
+          Error.raise err.error
+      | Ok {Malleable_error.Accumulator.computation_result= []; soft_errors= _}
+        ->
+          [%log info]
+            "wait_for_rejected_payment: no added rejected commands, trying \
+             again" ;
+          let%bind () = after Time.Span.(of_sec retry_delay_sec) in
+          go (n - 1)
+      | Ok {Malleable_error.Accumulator.computation_result= res; soft_errors= _}
+        -> (
+          let rejected_payment_opt =
+            List.find res
+              ~f:(fun ({command; _} : Rejected_command_query.Result.t) ->
+                command_matches_payment ~sender ~receiver ~amount command )
+          in
+          match rejected_payment_opt with
+          | Some {command; reason} ->
+              let open Network_pool.Transaction_pool.Diff_versioned in
+              [%log info]
+                "wait_for_rejected_payment: found matching rejected payment"
+                ~metadata:
+                  [ ("command", User_command.to_yojson command)
+                  ; ("reason", Diff_error.to_yojson reason) ] ;
+              Malleable_error.return ()
+          | None ->
+              [%log info]
+                "wait_for_rejected_payment: no matching payments found" ;
+              let%bind () = after Time.Span.(of_sec retry_delay_sec) in
+              go (n - 1) )
   in
   go num_tries
 
