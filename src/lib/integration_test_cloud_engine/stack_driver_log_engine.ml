@@ -1113,7 +1113,7 @@ let wait_for_payment ?(num_tries = 30) t ~logger ~sender ~receiver ~amount () :
   in
   go num_tries
 
-let wait_for_rejected_payment ?(num_tries = 30) t ~logger ~sender ~receiver
+let wait_for_rejected_payment ?(num_tries = 50) t ~logger ~sender ~receiver
     ~amount () : unit Malleable_error.t =
   let retry_delay_sec = 30.0 in
   let rec go n =

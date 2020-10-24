@@ -81,7 +81,7 @@ module Make (Engine : Engine_intf) = struct
     in
     let sender = pk_of_keypair 1 in
     let receiver = pk_of_keypair 0 in
-    let amount = Currency.Amount.of_int 1_000_000_000_999 in
+    let amount = Currency.Amount.of_int 999_000_000_000 in
     let fee = Currency.Fee.of_int 10_000_000 in
     [%log info] "Sending payment" ;
     let%bind () =
