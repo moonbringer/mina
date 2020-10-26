@@ -192,7 +192,7 @@ module Node = struct
                 Deferred.bind ~f:Malleable_error.return
                   (after (Time.Span.of_sec retry_delay_sec))
               in
-              [%log info] "%d tries left" (n - 1) ;
+              [%log info] "After GraphQL error, %d tries left" (n - 1) ;
               go (n - 1) )
             else Malleable_error.of_string_hard_error err_string
     in
@@ -235,8 +235,10 @@ module Node = struct
     in
     get_balance ()
 
-  let send_payment ~logger t ~sender ~receiver ~amount ~fee =
-    [%log info] "Sending a payment.."
+  (* if we expect failure, might want retry_on_graphql_error to be false *)
+  let send_payment ?(retry_on_graphql_error = true) ~logger t ~sender ~receiver
+      ~amount ~fee =
+    [%log info] "Sending a payment"
       ~metadata:
         [("namespace", `String t.namespace); ("pod_id", `String t.pod_id)] ;
     let graphql_port = 3085 in
@@ -264,8 +266,7 @@ module Node = struct
           ~fee:(Graphql_lib.Encoders.fee fee)
           ()
       in
-      (* retry_on_graphql_error=true because the node might be bootstrapping *)
-      retry ~logger ~graphql_port ~retry_on_graphql_error:true
+      retry ~logger ~graphql_port ~retry_on_graphql_error
         ~query_name:"send_payment_graphql" send_payment_obj
     in
     let%map sent_payment_obj = send_payment_graphql () in
