@@ -15,7 +15,7 @@ module Make (Engine : Engine_intf) = struct
         [{balance= "4000"; timing= Untimed}; {balance= "3000"; timing= Untimed}]
     ; num_snark_workers= 0 }
 
-  let expected_error_event_ids = []
+  let expected_error_event_reprs = []
 
   let run network log_engine =
     let open Malleable_error.Let_syntax in

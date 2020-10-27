@@ -69,7 +69,11 @@ module Set = struct
 
   let combine = List.fold_left ~init:empty ~f:merge
 
-  let filter a ~f =
-    { soft_errors= List.filter a.soft_errors ~f
-    ; hard_errors= List.filter a.hard_errors ~f }
+  let concat_map a ~f = List.map (a.soft_errors @ a.hard_errors) ~f
+
+  let partition_tf a ~f : t * t =
+    let soft1, soft2 = List.partition_tf a.soft_errors ~f in
+    let hard1, hard2 = List.partition_tf a.hard_errors ~f in
+    ( {soft_errors= soft1; hard_errors= hard1}
+    , {soft_errors= soft2; hard_errors= hard2} )
 end

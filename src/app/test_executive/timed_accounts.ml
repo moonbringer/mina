@@ -37,9 +37,9 @@ module Make (Engine : Engine_intf) = struct
         [ {balance= block_producer_balance; timing= timing1}
         ; {balance= block_producer_balance; timing= timing2} ] }
 
-  let expected_error_event_ids =
+  let expected_error_event_reprs =
     let open Network_pool.Transaction_pool in
-    [rejecting_command_for_reason_structured_events_id]
+    [rejecting_command_for_reason_structured_events_repr]
 
   let expected_balance blocks ~slots init_balance ~slots_with_locked_tokens
       ~(constraint_constants : Genesis_constants.Constraint_constants.t) =

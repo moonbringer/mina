@@ -24,7 +24,8 @@ let tests : test list =
   ; ("send-payment", (module Send_payment_test.Make : Test_functor_intf))
   ; ("timed-accts", (module Timed_accounts.Make : Test_functor_intf)) ]
 
-let report_test_errors error_set =
+let report_test_errors error_set
+    (missing_event_reprs : Structured_log_events.repr list) =
   let open Test_error in
   let open Test_error.Set in
   let errors =
@@ -32,7 +33,9 @@ let report_test_errors error_set =
       [ List.map error_set.soft_errors ~f:(fun err -> (`Soft, err))
       ; List.map error_set.hard_errors ~f:(fun err -> (`Hard, err)) ]
   in
-  if List.length errors > 0 then (
+  let num_errors = List.length errors in
+  let num_missing_events = List.length missing_event_reprs in
+  if num_errors > 0 then (
     Print.eprintf "%s=== Errors encountered while running tests ===%s\n"
       Bash_colors.red Bash_colors.none ;
     let sorted_errors =
@@ -49,9 +52,16 @@ let report_test_errors error_set =
         in
         Print.eprintf "    %s%s%s\n" color (to_string error) Bash_colors.none
     ) ;
-    Out_channel.(flush stderr) ;
-    exit 1 )
-  else Deferred.unit
+    Out_channel.(flush stderr) ) ;
+  if num_missing_events > 0 then (
+    Print.eprintf
+      "%s=== Missing expected log events while running tests ===%s\n"
+      Bash_colors.red Bash_colors.none ;
+    List.iter missing_event_reprs ~f:(fun repr ->
+        Print.eprintf "    %s%s%s\n" Bash_colors.red repr.event_name
+          Bash_colors.none ) ;
+    Out_channel.(flush stderr) ) ;
+  if num_errors > 0 || num_missing_events > 0 then exit 1 else Deferred.unit
 
 let main inputs =
   (* TODO: abstract over which engine is in use, allow engine to be set form CLI *)
@@ -107,21 +117,41 @@ let main inputs =
       let all_errors =
         Test_error.Set.combine [test_error_set; log_engine_error_set]
       in
-      let unexpected_errors =
-        Test_error.Set.filter all_errors ~f:(fun err ->
-            match (err : Test_error.t) with
-            | Internal_error _ ->
-                true
-            | Remote_error rem_err -> (
-              match rem_err.error_message.event_id with
-              | None ->
-                  true
-              | Some id ->
-                  not
-                    (List.mem T.expected_error_event_ids id
-                       ~equal:Structured_log_events.equal_id) ) )
+      let expected_error_event_ids =
+        List.map T.expected_error_event_reprs ~f:(fun repr -> repr.id)
       in
-      report_test_errors unexpected_errors
+      let is_expected_error (err : Test_error.t) =
+        match err with
+        | Internal_error _ ->
+            false
+        | Remote_error rem_err -> (
+          match rem_err.error_message.event_id with
+          | None ->
+              false
+          | Some id ->
+              List.mem expected_error_event_ids id
+                ~equal:Structured_log_events.equal_id )
+      in
+      let received_expected_errors, unexpected_errors =
+        Test_error.Set.partition_tf all_errors ~f:is_expected_error
+      in
+      let received_expected_error_ids =
+        Test_error.Set.concat_map received_expected_errors
+          ~f:(fun (err : Test_error.t) ->
+            match err with
+            | Internal_error _ ->
+                None
+            | Remote_error rem_err ->
+                rem_err.error_message.event_id )
+        |> List.filter_opt
+      in
+      let missing_expected_error_reprs =
+        List.filter T.expected_error_event_reprs ~f:(fun repr ->
+            not
+              (List.mem received_expected_error_ids repr.id
+                 ~equal:Structured_log_events.equal_id) )
+      in
+      report_test_errors unexpected_errors missing_expected_error_reprs
     in
     let%bind test_error_str =
       Malleable_error.hard_error_to_string test_result
