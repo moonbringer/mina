@@ -286,7 +286,11 @@ module Json_parsing = struct
         let%bind entry =
           Malleable_error.of_option
             (List.Assoc.find assoc key ~equal:String.equal)
-            "failed to find path in json object"
+            (sprintf "failed to find path using key '%s' in json object { %s }"
+               key
+               (String.concat ~sep:", "
+                  (List.map assoc ~f:(fun (s, json) ->
+                       sprintf "\"%s\":%s" s (Yojson.Safe.to_string json) ))))
         in
         find parser entry path'
     | _ ->
@@ -1136,6 +1140,9 @@ let wait_for_rejected_payment ?(num_tries = 50) t ~logger ~sender ~receiver
       | Error
           { Malleable_error.Hard_fail.hard_error= err
           ; Malleable_error.Hard_fail.soft_errors= _ } ->
+          [%log error]
+            "wait_for_rejected_payment: error pulling subscription: %s"
+            (Error.to_string_hum err.error) ;
           Error.raise err.error
       | Ok {Malleable_error.Accumulator.computation_result= []; soft_errors= _}
         ->

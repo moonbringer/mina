@@ -68,4 +68,8 @@ module Set = struct
     ; hard_errors= a.hard_errors @ b.hard_errors }
 
   let combine = List.fold_left ~init:empty ~f:merge
+
+  let filter a ~f =
+    { soft_errors= List.filter a.soft_errors ~f
+    ; hard_errors= List.filter a.hard_errors ~f }
 end

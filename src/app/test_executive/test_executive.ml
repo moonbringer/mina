@@ -22,9 +22,7 @@ let tests : test list =
     , (module Block_production_test.Make : Test_functor_intf) )
   ; ("bootstrap", (module Bootstrap_test.Make : Test_functor_intf))
   ; ("send-payment", (module Send_payment_test.Make : Test_functor_intf))
-  ; ( "timed-accts"
-    , (module Block_production_test_timed_accounts.Make : Test_functor_intf) )
-  ]
+  ; ("timed-accts", (module Timed_accounts.Make : Test_functor_intf)) ]
 
 let report_test_errors error_set =
   let open Test_error in
@@ -106,8 +104,24 @@ let main inputs =
         | Error error_set ->
             error_set
       in
-      report_test_errors
-        (Test_error.Set.combine [test_error_set; log_engine_error_set])
+      let all_errors =
+        Test_error.Set.combine [test_error_set; log_engine_error_set]
+      in
+      let unexpected_errors =
+        Test_error.Set.filter all_errors ~f:(fun err ->
+            match (err : Test_error.t) with
+            | Internal_error _ ->
+                true
+            | Remote_error rem_err -> (
+              match rem_err.error_message.event_id with
+              | None ->
+                  true
+              | Some id ->
+                  not
+                    (List.mem T.expected_error_event_ids id
+                       ~equal:Structured_log_events.equal_id) ) )
+      in
+      report_test_errors unexpected_errors
     in
     let%bind test_error_str =
       Malleable_error.hard_error_to_string test_result

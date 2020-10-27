@@ -181,6 +181,8 @@ module type Test_intf = sig
 
   val config : Test_config.t
 
+  val expected_error_event_ids : Structured_log_events.id list
+
   val run : network -> log_engine -> unit Malleable_error.t
 end
 

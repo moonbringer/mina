@@ -37,6 +37,10 @@ module Make (Engine : Engine_intf) = struct
         [ {balance= block_producer_balance; timing= timing1}
         ; {balance= block_producer_balance; timing= timing2} ] }
 
+  let expected_error_event_ids =
+    let open Network_pool.Transaction_pool in
+    [rejecting_command_for_reason_structured_events_id]
+
   let expected_balance blocks ~slots init_balance ~slots_with_locked_tokens
       ~(constraint_constants : Genesis_constants.Constraint_constants.t) =
     let open Currency in
@@ -100,23 +104,15 @@ module Make (Engine : Engine_intf) = struct
         (* expect GraphQL error due to insufficient funds *)
         let err_str = Error.to_string_mach error in
         let err_str_lowercase = String.lowercase err_str in
-        let%bind () =
-          if
-            Core_kernel.List.for_all ["graphql"; "insufficient_funds"]
-              ~f:(fun substring ->
-                String.is_substring ~substring err_str_lowercase )
-          then Malleable_error.return ()
-          else (
-            [%log error] "Payment failed, but for unexpected reason: %s"
-              err_str ;
-            Malleable_error.of_string_hard_error_format
-              "Payment failed for unexpected reason: %s" err_str )
-        in
-        let%map () =
-          Log_engine.wait_for_rejected_payment log_engine ~logger ~sender
-            ~receiver ~amount ()
-        in
-        [%log info] "Payment rejected in transaction pool"
+        if
+          String.is_substring ~substring:"insufficient_funds" err_str_lowercase
+        then (
+          [%log info] "Got expected insufficient funds error" ;
+          Malleable_error.return () )
+        else (
+          [%log error] "Payment failed, but for unexpected reason: %s" err_str ;
+          Malleable_error.of_string_hard_error_format
+            "Payment failed for unexpected reason: %s" err_str )
 
   (* ;
     let%bind ( `Blocks_produced blocks_produced
